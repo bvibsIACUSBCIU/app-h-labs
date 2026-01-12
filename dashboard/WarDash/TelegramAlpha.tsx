@@ -45,7 +45,8 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
         const targetUrl = `https://t.me/s/${channel}?t=${Date.now()}`;
         const proxies = [
             (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-            (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`
+            (url: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+            (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
         ];
 
         let html = '';
@@ -258,8 +259,8 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
                                 </div>
 
                                 <div className={`relative px-5 py-4 rounded-2xl rounded-tl-none border transition-all duration-300 ${post.channel === 'groupdigest'
-                                        ? 'bg-slate-900/80 border-purple-500/10 hover:border-purple-500/30 group-hover:bg-slate-800/80'
-                                        : 'bg-slate-900/80 border-blue-500/10 hover:border-blue-500/30 group-hover:bg-slate-800/80'
+                                    ? 'bg-slate-900/80 border-purple-500/10 hover:border-purple-500/30 group-hover:bg-slate-800/80'
+                                    : 'bg-slate-900/80 border-blue-500/10 hover:border-blue-500/30 group-hover:bg-slate-800/80'
                                     }`}>
                                     {/* Glass reflection effect */}
                                     <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.03] to-transparent pointer-events-none" />

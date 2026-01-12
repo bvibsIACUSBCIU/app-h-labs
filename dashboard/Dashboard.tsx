@@ -19,6 +19,8 @@ const BINANCE_ENDPOINTS = [
   "https://data-api.binance.vision/api/v3"
 ];
 
+const PROXY_URL = "https://corsproxy.io/?url=";
+
 const DEFAULT_SYMBOLS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
   'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'TRXUSDT', 'AVAXUSDT',
@@ -54,10 +56,20 @@ export const Dashboard = ({ onLogout, lang }: DashboardProps) => {
     for (const endpoint of BINANCE_ENDPOINTS) {
       if (success) break;
       try {
-        const response = await fetch(`${endpoint}/ticker/24hr?symbols=${symbolsParam}`);
+        const url = `${endpoint}/ticker/24hr?symbols=${symbolsParam}`;
+        // 先尝试直连，如果失败则尝试代理
+        let response;
+        try {
+          response = await fetch(url);
+        } catch (e) {
+          response = await fetch(`${PROXY_URL}${encodeURIComponent(url)}`);
+        }
+
         if (!response.ok) continue;
 
         const data = await response.json();
+        if (!Array.isArray(data)) continue;
+
         const formatted: BinanceTickerData[] = data.map((ticker: any) => {
           const displaySymbol = ticker.symbol.replace('USDT', '');
           const price = parseFloat(ticker.lastPrice);
