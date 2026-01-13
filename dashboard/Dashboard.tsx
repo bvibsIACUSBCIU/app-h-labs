@@ -37,40 +37,56 @@ interface BinanceTickerData {
   trend: 'up' | 'down';
 }
 
+interface BinanceRawTicker {
+  symbol: string;
+  lastPrice: string;
+  priceChangePercent: string;
+}
+
 interface DashboardProps {
   onLogout: () => void;
   lang: Language;
 }
 
-export const Dashboard = ({ onLogout, lang }: DashboardProps) => {
+export function Dashboard({ onLogout, lang }: DashboardProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<TabState>('war_room');
   const [marketData, setMarketData] = useState<BinanceTickerData[]>([]);
   const [gasPrice] = useState({ price: '12 gwei', change: '-5%', trend: 'down' as 'up' | 'down' });
   const [searchedSymbols, setSearchedSymbols] = useState<string[]>(DEFAULT_SYMBOLS);
 
+  /**
+   * Format price based on its value
+   */
+  function formatPrice(price: number): string {
+    if (price >= 1000) {
+      return `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+    }
+    return price >= 1 ? `$${price.toFixed(2)}` : `$${price.toFixed(4)}`;
+  }
+
   // 获取币安市场数据 (带有多个备用节点)
-  const fetchBinanceData = async (symbols: string[] = DEFAULT_SYMBOLS) => {
+  async function fetchBinanceData(symbols: string[] = DEFAULT_SYMBOLS): Promise<void> {
     const symbolsParam = JSON.stringify(symbols);
-    let success = false;
 
     for (const endpoint of BINANCE_ENDPOINTS) {
-      if (success) break;
       try {
         const url = `${endpoint}/ticker/24hr?symbols=${symbolsParam}`;
-        // 先尝试直连，如果失败则尝试代理
-        let response;
+
+        let response: Response;
         try {
           response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         } catch (e) {
-          response = await fetch(`${PROXY_URL}${encodeURIComponent(url)}`);
+          // 尝试通过代理访问
+          const proxyUrl = `${PROXY_URL}${encodeURIComponent(url)}`;
+          response = await fetch(proxyUrl);
+          if (!response.ok) continue;
         }
 
-        if (!response.ok) continue;
-
-        const data = await response.json();
+        const data: BinanceRawTicker[] = await response.json();
         if (!Array.isArray(data)) continue;
 
-        const formatted: BinanceTickerData[] = data.map((ticker: any) => {
+        const formatted: BinanceTickerData[] = data.map((ticker) => {
           const displaySymbol = ticker.symbol.replace('USDT', '');
           const price = parseFloat(ticker.lastPrice);
           const change = parseFloat(ticker.priceChangePercent);
@@ -78,23 +94,21 @@ export const Dashboard = ({ onLogout, lang }: DashboardProps) => {
           return {
             symbol: ticker.symbol,
             displaySymbol,
-            price: price >= 1000 ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : price >= 1 ? `$${price.toFixed(2)}` : `$${price.toFixed(4)}`,
+            price: formatPrice(price),
             change: `${change >= 0 ? '+' : ''}${change.toFixed(1)}%`,
             trend: change >= 0 ? 'up' : 'down'
           };
         });
 
         setMarketData(formatted);
-        success = true;
+        return; // Success, exit the loop
       } catch (err) {
         console.warn(`Binance endpoint ${endpoint} failed, trying next...`);
       }
     }
 
-    if (!success) {
-      console.error("All Binance API endpoints failed.");
-    }
-  };
+    console.error("All Binance API endpoints failed.");
+  }
 
   // 初始化和定时刷新市场数据
   useEffect(() => {
@@ -148,4 +162,4 @@ export const Dashboard = ({ onLogout, lang }: DashboardProps) => {
       />
     </div>
   );
-};
+}

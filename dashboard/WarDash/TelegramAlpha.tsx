@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MessageCircle, ExternalLink, Ghost, RefreshCw } from 'lucide-react';
 import { Language } from '../../i18n';
-import { SectionCard } from '../../components/SectionCard';
+import { db } from '../../firebase';
+import { collection, setDoc, doc, getDocs, query, orderBy, limit } from 'firebase/firestore';
 
 interface TelegramPost {
     id: number;
@@ -15,33 +16,111 @@ interface TelegramAlphaProps {
     lang: Language;
 }
 
-export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
+/**
+ * Extracts post ID from message wrap element
+ */
+function extractPostId(wrap: Element): number {
+    const dataId = wrap.getAttribute('data-post')?.split('/').pop();
+    if (dataId) return parseInt(dataId, 10);
+
+    const linkElement = wrap.querySelector('.tgme_widget_message_date') as HTMLAnchorElement;
+    const linkId = linkElement?.href?.split('/').pop();
+    return linkId ? parseInt(linkId, 10) : Math.random();
+}
+
+/**
+ * Cleans Telegram message text according to requirements
+ */
+function cleanMessageText(element: HTMLElement, channel: string): string {
+    const cloned = element.cloneNode(true) as HTMLElement;
+
+    // 1. Handle break lines and remove links
+    cloned.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+    cloned.querySelectorAll('a').forEach(link => link.remove());
+
+    let text = cloned.innerText || cloned.textContent || '';
+
+    // 2. Core cleaning logic
+    text = text.replace(/https?:\/\/[^\s]+/g, '');
+    text = text.replace(/\([^\)]*\)/g, '').replace(/（[^）]*）/g, '');
+
+    if (channel === 'CryptoMarketAggregator') {
+        text = text.replace(/[|｜]{1,}/g, '\n');
+    }
+
+    text = text.replace(/^\s*[|｜]\s*/gm, '');
+    text = text.replace(/\s*[|｜]\s*$/gm, '');
+
+    // 3. Newline logic: 2 -> 1, 3+ -> 2
+    text = text.replace(/\n{2,}/g, (match: string) => match.length === 2 ? '\n' : '\n\n');
+
+    return text.trim();
+}
+
+export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement {
     const [activeChannel, setActiveChannel] = useState('all');
     const [tgPosts, setTgPosts] = useState<TelegramPost[]>([]);
     const [tgLoading, setTgLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // 从本地缓存加载消息
-    const loadCachedPosts = () => {
+    /**
+     * 从服务器和本地缓存加载消息
+     * 使用多层错误处理，确保任何失败都不会导致组件崩溃
+     */
+    async function loadInitialPosts(): Promise<void> {
+        // 1. 先尝试从本地加载，提供最快响应
         try {
             const cached = localStorage.getItem('tg_posts_all');
             if (cached) {
-                setTgPosts(JSON.parse(cached));
+                const parsed = JSON.parse(cached);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setTgPosts(parsed);
+                }
             }
         } catch (e) {
-            console.error("Failed to load TG cache:", e);
+            console.warn("Failed to load TG cache:", e);
+            // 清除损坏的缓存
+            try {
+                localStorage.removeItem('tg_posts_all');
+            } catch (clearError) {
+                console.warn("Failed to clear corrupted cache:", clearError);
+            }
         }
-    };
 
-    // 自动滚动到底部
-    useEffect(() => {
-        if (scrollRef.current && tgPosts.length > 0) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        // 2. 从 Firestore 加载最新数据（带超时保护）
+        try {
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Firestore timeout')), 10000)
+            );
+
+            const queryPromise = (async () => {
+                const q = query(collection(db, 'telegram_alpha'), orderBy('date', 'asc'), limit(40));
+                const querySnapshot = await getDocs(q);
+                const serverPosts: TelegramPost[] = [];
+                querySnapshot.forEach((doc) => {
+                    serverPosts.push(doc.data() as TelegramPost);
+                });
+                return serverPosts;
+            })();
+
+            const serverPosts = await Promise.race([queryPromise, timeoutPromise]) as TelegramPost[];
+
+            if (Array.isArray(serverPosts) && serverPosts.length > 0) {
+                setTgPosts(serverPosts);
+                try {
+                    localStorage.setItem('tg_posts_all', JSON.stringify(serverPosts));
+                } catch (storageError) {
+                    console.warn("Failed to save to localStorage:", storageError);
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to load TG from Firestore:", e);
+            // Firestore 失败不应该阻止组件渲染
         }
-    }, [tgPosts, activeChannel]);
+    }
 
     // 获取 Telegram 频道最新消息列表
-    const fetchChannelMessages = async (channel: string) => {
+    async function fetchChannelMessages(channel: string): Promise<TelegramPost[]> {
         const targetUrl = `https://t.me/s/${channel}?t=${Date.now()}`;
         const proxies = [
             (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
@@ -63,7 +142,7 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
                     html = await response.text();
                 }
 
-                if (html && html.includes('tgme_widget_message')) break;
+                if (html?.includes('tgme_widget_message')) break;
             } catch (err) {
                 console.warn(`Proxy failed for ${channel}, trying next...`);
             }
@@ -73,96 +152,119 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
 
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
-
         const messageWraps = doc.querySelectorAll('.tgme_widget_message');
-        const posts: any[] = [];
+        const posts: TelegramPost[] = [];
         const lastWraps = Array.from(messageWraps).slice(-10);
 
         for (const wrap of lastWraps) {
-            const textElement = wrap.querySelector('.tgme_widget_message_text');
+            const textElement = wrap.querySelector('.tgme_widget_message_text') as HTMLElement;
             if (!textElement) continue;
 
-            // 提取 ID (data-post 属性或链接)
-            let idVal = wrap.getAttribute('data-post')?.split('/').pop();
-            if (!idVal) {
-                const linkElement = wrap.querySelector('.tgme_widget_message_date') as HTMLAnchorElement;
-                idVal = linkElement?.href?.split('/').pop();
-            }
-            const id = idVal ? parseInt(idVal) : Math.random();
-
+            const id = extractPostId(wrap);
             const timeElement = wrap.querySelector('.tgme_widget_message_date time');
-            const dateStr = timeElement ? timeElement.getAttribute('datetime') : undefined;
-
+            const dateStr = timeElement?.getAttribute('datetime') ?? undefined;
             const authorElement = wrap.querySelector('.tgme_widget_message_author_name');
-            const author = authorElement ? authorElement.textContent?.trim() : undefined;
+            const author = authorElement?.textContent?.trim() ?? undefined;
 
-            const cloned = textElement.cloneNode(true) as HTMLElement;
+            const text = cleanMessageText(textElement, channel);
 
-            // 1. 处理换行和链接
-            cloned.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-            cloned.querySelectorAll('a').forEach(link => link.remove());
+            // 前缀检测
+            if (/^\s*pinned/i.test(text)) continue;
 
-            let text = (cloned as any).innerText || cloned.textContent || '';
-
-            // 2. 核心清理逻辑
-            text = text.replace(/https?:\/\/[^\s]+/g, '');
-            text = text.replace(/\([^\)]*\)/g, '').replace(/（[^）]*）/g, '');
-
-            if (channel === 'CryptoMarketAggregator') {
-                text = text.replace(/[|｜]{1,}/g, '\n');
-            }
-
-            text = text.replace(/^\s*[|｜]\s*/gm, '');
-            text = text.replace(/\s*[|｜]\s*$/gm, '');
-
-            // 3. 用户需求逻辑：两个换行替换为一个；三个及以上换行替换为两个
-            text = text.replace(/\n{2,}/g, (match: string) => match.length === 2 ? '\n' : '\n\n');
-
-            // 4. 前缀检测
-            if (/^\s*pinned/i.test(text)) {
-                continue;
-            }
-
-            if (text.trim()) {
-                posts.push({ id, text: text.trim(), date: dateStr, author, channel });
+            if (text) {
+                posts.push({ id, text, date: dateStr, author, channel });
             }
         }
         return posts;
-    };
+    }
 
-    const refreshAllChannels = async (forceLoading = false) => {
+    /**
+     * 刷新所有频道的消息
+     * 使用超时保护和完善的错误处理
+     */
+    async function refreshAllChannels(forceLoading = false): Promise<void> {
         if (forceLoading) setTgLoading(true);
         const channels = ['CryptoMarketAggregator', 'groupdigest'];
 
         try {
-            const results = await Promise.all(channels.map(c => fetchChannelMessages(c)));
+            // 为每个频道设置超时保护
+            const fetchWithTimeout = (channel: string) => {
+                const timeoutPromise = new Promise<TelegramPost[]>((resolve) =>
+                    setTimeout(() => {
+                        console.warn(`Fetch timeout for channel: ${channel}`);
+                        resolve([]);
+                    }, 15000)
+                );
+
+                return Promise.race([
+                    fetchChannelMessages(channel).catch(err => {
+                        console.warn(`Failed to fetch ${channel}:`, err);
+                        return [];
+                    }),
+                    timeoutPromise
+                ]);
+            };
+
+            const results = await Promise.all(channels.map(c => fetchWithTimeout(c)));
             const allNewPosts = results.flat();
 
             setTgPosts(prev => {
                 const combined = [...prev];
                 allNewPosts.forEach(newPost => {
                     const exists = combined.some(p => p.id === newPost.id && p.channel === newPost.channel);
-                    if (!exists) combined.push(newPost);
+                    if (!exists) {
+                        combined.push(newPost);
+                        // 异步保存到 Firestore（带错误处理）
+                        try {
+                            const docId = `${newPost.channel}_${newPost.id}`;
+                            setDoc(doc(db, 'telegram_alpha', docId), newPost).catch(err => {
+                                console.warn(`Failed to save post ${docId} to Firestore:`, err);
+                            });
+                        } catch (err) {
+                            console.warn('Failed to initiate Firestore save:', err);
+                        }
+                    }
                 });
 
                 const finalPosts = combined
                     .filter(p => !/^\s*pinned/i.test(p.text))
                     .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime())
-                    .slice(-40);
+                    .slice(0, 40);
 
-                localStorage.setItem('tg_posts_all', JSON.stringify(finalPosts));
+                try {
+                    localStorage.setItem('tg_posts_all', JSON.stringify(finalPosts));
+                } catch (storageError) {
+                    console.warn('Failed to save to localStorage:', storageError);
+                }
+
                 return finalPosts;
             });
+        } catch (err) {
+            console.error('Critical error in refreshAllChannels:', err);
+            // 即使发生错误也不应该崩溃
         } finally {
             setTgLoading(false);
         }
-    };
+    }
 
     useEffect(() => {
-        loadCachedPosts();
-        refreshAllChannels(true);
+        // 使用 IIFE 包装异步操作，添加错误边界
+        (async () => {
+            try {
+                await loadInitialPosts();
+                await refreshAllChannels(true);
+            } catch (err) {
+                console.error('Failed to initialize TelegramAlpha:', err);
+                // 即使初始化失败，组件也应该能够渲染
+            }
+        })();
 
-        const interval = setInterval(() => refreshAllChannels(false), 90000); // 1.5分钟刷新一次
+        const interval = setInterval(() => {
+            refreshAllChannels(false).catch(err => {
+                console.warn('Background refresh failed:', err);
+            });
+        }, 90000); // 1.5分钟刷新一次
+
         return () => clearInterval(interval);
     }, []);
 
@@ -212,12 +314,12 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
                 </div>
             </div>
 
-            {/* Message Feed */}
+            {/* Message Feed - 使用 flex-col-reverse 使最新消息在底部可见 */}
             <div
                 ref={scrollRef}
-                className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar scroll-smooth bg-[radial-gradient(circle_at_top_right,rgba(30,41,59,0.2),transparent_50%)]"
+                className="flex-1 overflow-y-auto p-6 flex flex-col-reverse custom-scrollbar scroll-smooth bg-[radial-gradient(circle_at_top_right,rgba(30,41,59,0.2),transparent_50%)]"
             >
-                {tgLoading && filteredPosts.length === 0 ? (
+                <div className="space-y-6">{tgLoading && filteredPosts.length === 0 ? (
                     [1, 2, 3, 4].map((i) => (
                         <div key={i} className="flex gap-4 animate-pulse">
                             <div className="w-10 h-10 rounded-xl bg-slate-800/50 flex-shrink-0" />
@@ -281,8 +383,8 @@ export const TelegramAlpha: React.FC<TelegramAlphaProps> = ({ lang }) => {
                         <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-1">Awaiting Alpha Signals</h3>
                         <p className="text-xs text-slate-600 italic">Scanning decentralized networks for high-conviction data...</p>
                     </div>
-                )}
+                )}</div>
             </div>
         </div>
     );
-};
+}
