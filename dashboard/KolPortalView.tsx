@@ -17,6 +17,24 @@ import { auth } from "../firebase";
 
 const provider = new TwitterAuthProvider();
 
+// API 数据接口定义
+interface UserBasicInfo {
+  name: string;
+  followers_count: number;
+  description: string;
+  profile_image_url: string;
+}
+
+interface FollowerUser {
+  name: string;
+  screen_name: string;
+  followers_count: number;
+  is_blue_verified: boolean;
+  verified: boolean;
+  description: string;
+  profile_image_url_https: string;
+}
+
 interface KolPortalViewProps {
   lang: Language;
   translations: Record<Language, any>;
@@ -57,6 +75,12 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 真实数据状态
+  const [userBasicInfo, setUserBasicInfo] = useState<UserBasicInfo | null>(null);
+  const [topFollowers, setTopFollowers] = useState<FollowerUser[]>([]);
+  const [blueVerifiedCount, setBlueVerifiedCount] = useState<number>(0);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+
   // Listen for auth state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -72,6 +96,39 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
     });
     return () => unsubscribe();
   }, []);
+
+  // 当用户登录且有 username 时,先检查缓存,再获取真实数据
+  useEffect(() => {
+    if (user && username && twitterId) {
+      // 检查本地缓存
+      const cacheKey = `kol_data_${twitterId}`;
+      const cachedData = localStorage.getItem(cacheKey);
+
+      if (cachedData) {
+        try {
+          const parsed = JSON.parse(cachedData);
+          const cacheAge = Date.now() - parsed.timestamp;
+          const maxAge = 24 * 60 * 60 * 1000; // 24小时
+
+          if (cacheAge < maxAge) {
+            console.log('📦 使用缓存数据');
+            setUserBasicInfo(parsed.userBasicInfo);
+            setTopFollowers(parsed.topFollowers);
+            setBlueVerifiedCount(parsed.blueVerifiedCount);
+            return; // 使用缓存,不调用 API
+          } else {
+            console.log('⏰ 缓存已过期,重新获取数据');
+          }
+        } catch (e) {
+          console.error('缓存解析失败:', e);
+        }
+      }
+
+      // 缓存不存在或已过期,调用 API
+      fetchUserBasicInfo(username);
+      fetchFollowersList(twitterId);
+    }
+  }, [user, username, twitterId]);
 
   const handleLogin = async () => {
     setIsLoading(true);
@@ -122,20 +179,269 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
     }
   };
 
+  // 递归解析嵌套 JSON 字符串
+  function parseNestedJson(data: any): any {
+    if (typeof data === 'string') {
+      try {
+        return parseNestedJson(JSON.parse(data));
+      } catch {
+        return data;
+      }
+    }
+    if (typeof data === 'object' && data !== null) {
+      if (Array.isArray(data)) {
+        return data.map(item => parseNestedJson(item));
+      }
+      const result: any = {};
+      for (const key in data) {
+        result[key] = parseNestedJson(data[key]);
+      }
+      return result;
+    }
+    return data;
+  }
+
+  // 获取用户基本信息
+  async function fetchUserBasicInfo(screenName: string): Promise<void> {
+    const apiKey = import.meta.env.VITE_X_API_KEY;
+    if (!apiKey) {
+      console.error('API Key 未配置,请检查 .env 文件中的 VITE_X_API_KEY');
+      return;
+    }
+
+    try {
+      const url = `https://fapi.uk/api/base/apitools/userByScreenNameV2?apiKey=${apiKey}&screenName=${screenName}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'accept': '*/*' }
+      });
+
+      if (!response.ok) {
+        throw new Error(`请求失败: ${response.status}`);
+      }
+
+      const parsedData = await response.json();
+      const nestedData = parseNestedJson(parsedData);
+
+      // 兼容 data 字段为字符串或 dict 的情况
+      let dataField = nestedData.data;
+      if (typeof dataField === 'string') {
+        dataField = JSON.parse(dataField);
+      }
+
+      const userResult = dataField.data.user.result;
+      const legacy = userResult.legacy || {};
+
+      const basicInfo: UserBasicInfo = {
+        name: legacy.name || userResult.name || '',
+        followers_count: legacy.followers_count || userResult.followers_count || 0,
+        description: legacy.description || userResult.description || '',
+        profile_image_url: legacy.profile_image_url_https || userResult.profile_image_url_https || ''
+      };
+
+      setUserBasicInfo(basicInfo);
+    } catch (err) {
+      console.error('获取用户信息失败:', err);
+    }
+  }
+
+  // 获取粉丝列表数据
+  async function fetchFollowersList(userId: string): Promise<void> {
+    const apiKey = import.meta.env.VITE_X_API_KEY;
+    if (!apiKey) {
+      console.error('API Key 未配置,请检查 .env 文件中的 VITE_X_API_KEY');
+      return;
+    }
+
+    setIsLoadingData(true);
+    const allFollowers: FollowerUser[] = [];
+    let cursor = '-1';
+    let pageCount = 1;
+    const maxPages = 1000; // 默认最大1000页
+
+    console.log('🚀 开始获取粉丝数据...');
+
+    try {
+      while (pageCount <= maxPages) {
+        console.log(`正在获取第 ${pageCount} 页 (游标: ${cursor})...`);
+
+        const url = `https://fapi.uk/api/base/apitools/followersListV2?apiKey=${apiKey}&cursor=${cursor}&userId=${userId}`;
+
+        // 网络请求
+        let response;
+        try {
+          response = await fetch(url, {
+            method: 'GET',
+            headers: { 'accept': '*/*' }
+          });
+        } catch (networkError) {
+          console.error('网络请求失败:', networkError);
+          break;
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`API 请求失败 (${response.status}):`, errorText);
+          break;
+        }
+
+        const rawData = await response.text();
+
+        // 检查返回的是否是有效的响应
+        if (!rawData) {
+          console.error('API 返回了空响应');
+          break;
+        }
+
+        // 双重解析逻辑 - 参考 Python 代码
+        let outerData;
+        try {
+          outerData = JSON.parse(rawData);
+        } catch (parseError) {
+          console.error('外层 JSON 解析失败:', rawData.substring(0, 200));
+          break;
+        }
+
+        const innerDataStr = outerData.data || '{}';
+        let innerData;
+        try {
+          innerData = JSON.parse(innerDataStr);
+        } catch (parseError) {
+          console.error('内层 JSON 解析失败:', innerDataStr.substring(0, 200));
+          break;
+        }
+
+        const instructions = innerData?.data?.user?.result?.timeline?.timeline?.instructions || [];
+        let nextCursor: string | null = null;
+        let currentPageUsers: FollowerUser[] = [];
+
+        for (const instruction of instructions) {
+          if (instruction.type === 'TimelineAddEntries') {
+            const entries = instruction.entries || [];
+
+            for (const entry of entries) {
+              const content = entry.content || {};
+
+              // 提取用户信息
+              const itemContent = content.itemContent || {};
+              if (itemContent.itemType === 'TimelineUser') {
+                const userResults = itemContent.user_results?.result || {};
+                const isBlue = userResults.is_blue_verified || false;
+
+                if (userResults.legacy) {
+                  const legacy = userResults.legacy;
+                  currentPageUsers.push({
+                    name: legacy.name || '',
+                    screen_name: legacy.screen_name || '',
+                    followers_count: legacy.followers_count || 0,
+                    is_blue_verified: isBlue,
+                    verified: legacy.verified || false,
+                    description: legacy.description || '',
+                    profile_image_url_https: legacy.profile_image_url_https || ''
+                  });
+                }
+              }
+
+              // 提取下一页游标
+              if (content.cursorType === 'Bottom') {
+                nextCursor = content.value;
+              }
+            }
+          }
+        }
+
+        // 如果本页获取到了用户数据
+        if (currentPageUsers.length > 0) {
+          allFollowers.push(...currentPageUsers);
+          console.log(`✅ 本页获取 ${currentPageUsers.length} 人，累计: ${allFollowers.length} 人`);
+        } else {
+          console.log('⚠️ 本页未获取到用户数据，停止抓取');
+          break;
+        }
+
+        // 翻页判定
+        if (!nextCursor || nextCursor === '0' || nextCursor === cursor) {
+          console.log('🏁 已到达最后一页，停止抓取');
+          break;
+        }
+
+        cursor = nextCursor;
+        pageCount++;
+
+        // 优化延迟,加快获取速度 (400ms)
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
+
+      console.log(`📊 总计获取 ${allFollowers.length} 位粉丝`);
+
+      // 计算蓝V总数
+      const blueCount = allFollowers.filter(f => f.is_blue_verified).length;
+      setBlueVerifiedCount(blueCount);
+      console.log(`💎 蓝V用户: ${blueCount} 人`);
+
+      // 按粉丝数降序排列,取前20个
+      const topUsers = allFollowers
+        .sort((a, b) => b.followers_count - a.followers_count)
+        .slice(0, 20);
+
+      setTopFollowers(topUsers);
+      console.log('✅ 粉丝数据获取完成');
+
+      // 保存完整数据到本地缓存
+      if (twitterId) {
+        const cacheKey = `kol_data_${twitterId}`;
+        const cacheData = {
+          timestamp: Date.now(),
+          userBasicInfo,
+          topFollowers: topUsers,
+          blueVerifiedCount: blueCount
+        };
+        localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+        console.log('💾 数据已保存到本地缓存 (24小时有效)');
+      }
+    } catch (err) {
+      console.error('获取粉丝列表失败:', err);
+    } finally {
+      setIsLoadingData(false);
+    }
+  }
+
+  // 格式化数字显示
+  function formatNumber(num: number): string {
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(1) + 'M';
+    }
+    if (num >= 1000) {
+      return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toString();
+  }
+
   const userStats = {
     handle: user?.displayName || "@KOL_User",
-    followers: "128.5K", // Placeholder
-    verified: "2,450",   // Placeholder
-    exposure: "1.2M",   // Placeholder
-    engagement: "4.8%"   // Placeholder
+    followers: userBasicInfo ? formatNumber(userBasicInfo.followers_count) : "加载中...",
+    verified: blueVerifiedCount > 0 ? formatNumber(blueVerifiedCount) : "加载中...",
+    exposure: "1.2M",   // 暂无 API 数据
+    engagement: "4.8%"   // 暂无 API 数据
   };
 
-  const matrixKols = [
-    { name: "DeFi Wizard", handle: "@defi_wiz", followers: "45k Followers", tags: ["DeFi", "Research"], status: "Follow", bgColor: "bg-indigo-600" },
-    { name: "NFT Hunter", handle: "@nft_hunt", followers: "82k Followers", tags: ["NFT", "Alpha"], status: "Mutual", bgColor: "bg-purple-600" },
-    { name: "Chain Detective", handle: "@chain_det", followers: "120k Followers", tags: ["Security", "OnChain"], status: "Follow", bgColor: "bg-blue-600" },
-    { name: "Airdrop King", handle: "@airdrop_k", followers: "210k Followers", tags: ["Airdrop", "Guide"], status: "Mutual", bgColor: "bg-pink-600" },
-  ];
+  // 使用真实粉丝数据或占位数据
+  const matrixKols = topFollowers.length > 0
+    ? topFollowers.map(follower => ({
+      name: follower.name,
+      handle: `@${follower.screen_name}`,
+      followers: `${formatNumber(follower.followers_count)} Followers`,
+      description: follower.description,
+      avatar: follower.profile_image_url_https,
+      isBlue: follower.is_blue_verified,
+      isVerified: follower.verified
+    }))
+    : [
+      { name: "DeFi Wizard", handle: "@defi_wiz", followers: "45k Followers", description: "DeFi Research", avatar: "", isBlue: false, isVerified: false },
+      { name: "NFT Hunter", handle: "@nft_hunt", followers: "82k Followers", description: "NFT Alpha", avatar: "", isBlue: true, isVerified: false },
+      { name: "Chain Detective", handle: "@chain_det", followers: "120k Followers", description: "Security OnChain", avatar: "", isBlue: false, isVerified: true },
+      { name: "Airdrop King", handle: "@airdrop_k", followers: "210k Followers", description: "Airdrop Guide", avatar: "", isBlue: true, isVerified: false },
+    ];
 
   if (user) {
     return (
@@ -169,7 +475,6 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
                   ) : (
                     <span className="text-3xl font-bold text-slate-400">{user.displayName?.[0] || 'K'}</span>
                   )}
-                  <CheckCircle2 size={24} className="absolute bottom-0 right-0 text-blue-500 bg-slate-900 rounded-full" />
                 </div>
                 <div className="flex flex-col items-center gap-1">
                   <span className="font-bold text-lg text-white">{user.displayName}</span>
@@ -199,46 +504,65 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
         {/* Matrix Mutual/Push */}
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-slate-400">
-            <UserPlus size={18} /> <span className="text-sm font-medium">矩阵互关/互推</span>
+            <UserPlus size={18} /> <span className="text-sm font-medium">最具影响力粉丝</span>
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {matrixKols.map((kol, i) => (
-              <div key={i} className="bg-slate-900/50 border border-slate-800 rounded-xl p-5 flex flex-col gap-4 hover:border-slate-700 transition-colors">
-                <div className="flex justify-between items-start">
-                  <div className="flex gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${kol.bgColor}`}>
-                      {kol.name[0]}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-white text-sm">{kol.name}</h4>
-                      <p className="text-xs text-slate-500">{kol.handle}</p>
+            {/* 显示前8个最具影响力的粉丝 */}
+            {isLoadingData && topFollowers.length === 0 ? (
+              <div className="col-span-full text-center py-8 text-slate-400">
+                <div className="animate-spin w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full mx-auto mb-2"></div>
+                <p className="text-sm">正在加载粉丝数据...</p>
+              </div>
+            ) : (
+              matrixKols.slice(0, 8).map((kol, i) => (
+                <a
+                  key={i}
+                  href={`https://x.com/${kol.handle.replace('@', '')}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-slate-900/50 border border-slate-800 rounded-xl p-5 flex flex-col gap-4 hover:border-slate-700 transition-colors cursor-pointer group"
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="flex gap-3">
+                      {kol.avatar ? (
+                        <img
+                          src={kol.avatar}
+                          alt={kol.name}
+                          className="w-10 h-10 rounded-full object-cover border border-slate-700"
+                        />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white bg-gradient-to-br from-purple-600 to-blue-600">
+                          {kol.name[0]}
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1">
+                          <h4 className="font-bold text-white text-sm truncate">{kol.name}</h4>
+                          {kol.isBlue && (
+                            <CheckCircle2 size={14} className="text-blue-400 fill-blue-400/10 shrink-0" />
+                          )}
+                          {kol.isVerified && (
+                            <CheckCircle2 size={14} className="text-yellow-400 fill-yellow-400/10 shrink-0" />
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500 truncate">{kol.handle}</p>
+                      </div>
                     </div>
                   </div>
-                  {kol.status === 'Mutual' ? (
-                    <span className="px-2 py-1 rounded text-xs font-medium bg-green-900/30 text-green-400 border border-green-900/50 flex items-center gap-1">
-                      <Check size={10} /> Mutual
-                    </span>
-                  ) : (
-                    <button className="px-3 py-1 rounded text-xs font-medium bg-purple-600 text-white hover:bg-purple-500 transition-colors">
-                      Follow
-                    </button>
+
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <Users size={12} /> {kol.followers}
+                  </div>
+
+                  {kol.description && (
+                    <p className="text-xs text-slate-500 line-clamp-2 mt-auto">
+                      {kol.description}
+                    </p>
                   )}
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-slate-400">
-                  <Users size={12} /> {kol.followers}
-                </div>
-
-                <div className="flex gap-2 mt-auto">
-                  {kol.tags.map(tag => (
-                    <span key={tag} className="px-2 py-1 rounded bg-slate-800 text-slate-400 text-[10px] border border-slate-700">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
+                </a>
+              ))
+            )}
           </div>
         </div>
       </div>
