@@ -6,8 +6,9 @@ const App = () => {
     const [isLoggedIn, setIsLoggedIn] = useState(true); // Default to true for development
     const [lang, setLang] = useState<Language>('zh');
 
+    // 断开连接，返回官网
     const handleLogout = () => {
-        setIsLoggedIn(false);
+        window.location.href = 'https://hlabs.me/';
     };
 
     if (!isLoggedIn) {

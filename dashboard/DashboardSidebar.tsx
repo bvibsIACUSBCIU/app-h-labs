@@ -38,8 +38,8 @@ export const DashboardSidebar = ({ activeTab, setTab, onLogout, lang, translatio
               key={item.id}
               onClick={() => setTab(item.id as TabState)}
               className={`w-full flex items-center gap-3 px-3 py-3 rounded-md transition-all duration-200 ${isActive
-                  ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-600/20 shadow-[0_0_10px_rgba(79,70,229,0.1)]'
-                  : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-600/20 shadow-[0_0_10px_rgba(79,70,229,0.1)]'
+                : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
                 }`}
             >
               <item.icon size={20} strokeWidth={isActive ? 2.5 : 2} />
@@ -51,8 +51,12 @@ export const DashboardSidebar = ({ activeTab, setTab, onLogout, lang, translatio
       </nav>
 
       <div className="p-4 border-t border-slate-800">
-        <button onClick={onLogout} className="w-full flex items-center gap-3 px-3 py-2 text-slate-500 hover:text-red-400 transition-colors rounded-md hover:bg-red-950/10">
-          <LogOut size={18} />
+        {/* 点击断开连接将返回官网 https://hlabs.me/ */}
+        <button
+          onClick={onLogout}
+          className="w-full flex items-center gap-3 px-3 py-2 text-slate-500 hover:text-red-400 transition-all duration-300 rounded-md hover:bg-red-500/5 hover:shadow-[0_0_15px_rgba(239,68,68,0.1)] group"
+        >
+          <LogOut size={18} className="group-hover:scale-110 transition-transform duration-300" />
           <span className="hidden md:block text-sm font-medium">{t.disconnect}</span>
         </button>
       </div>
