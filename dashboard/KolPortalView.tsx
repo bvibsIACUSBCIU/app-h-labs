@@ -179,6 +179,25 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
     }
   };
 
+  // 强制刷新数据(忽略缓存)
+  const handleRefreshData = async (): Promise<void> => {
+    if (!username || !twitterId) {
+      console.error('用户信息不完整,无法刷新');
+      return;
+    }
+
+    console.log('🔄 手动刷新数据...');
+    setIsLoadingData(true);
+
+    // 清除当前缓存
+    const cacheKey = `kol_data_${twitterId}`;
+    localStorage.removeItem(cacheKey);
+
+    // 重新获取数据
+    await fetchUserBasicInfo(username);
+    await fetchFollowersList(twitterId);
+  };
+
   // 递归解析嵌套 JSON 字符串
   function parseNestedJson(data: any): any {
     if (typeof data === 'string') {
@@ -209,6 +228,8 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       return;
     }
 
+    console.log(`🔍 开始获取用户 @${screenName} 的基本信息...`);
+
     try {
       const url = `https://fapi.uk/api/base/apitools/userByScreenNameV2?apiKey=${apiKey}&screenName=${screenName}`;
       const response = await fetch(url, {
@@ -217,6 +238,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       });
 
       if (!response.ok) {
+        console.error(`❌ API 请求失败: ${response.status}`);
         throw new Error(`请求失败: ${response.status}`);
       }
 
@@ -238,6 +260,11 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
         description: legacy.description || userResult.description || '',
         profile_image_url: legacy.profile_image_url_https || userResult.profile_image_url_https || ''
       };
+
+      console.log(`✅ 用户信息获取成功:`, {
+        name: basicInfo.name,
+        followers_count: basicInfo.followers_count
+      });
 
       setUserBasicInfo(basicInfo);
     } catch (err) {
@@ -390,9 +417,25 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       // 保存完整数据到本地缓存
       if (twitterId) {
         const cacheKey = `kol_data_${twitterId}`;
+
+        // 获取当前的 userBasicInfo (可能已经从另一个函数设置)
+        // 或者从缓存中获取
+        let currentUserBasicInfo = userBasicInfo;
+        if (!currentUserBasicInfo) {
+          const existingCache = localStorage.getItem(cacheKey);
+          if (existingCache) {
+            try {
+              const parsed = JSON.parse(existingCache);
+              currentUserBasicInfo = parsed.userBasicInfo;
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+
         const cacheData = {
           timestamp: Date.now(),
-          userBasicInfo,
+          userBasicInfo: currentUserBasicInfo,
           topFollowers: topUsers,
           blueVerifiedCount: blueCount
         };
@@ -448,13 +491,26 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       <div className="animate-in fade-in duration-500 space-y-8">
         <div className="flex justify-between items-center">
           <TerminalHeader title={t.title} subtitle={t.subtitle} color="purple" />
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 text-slate-400 rounded-lg hover:text-white hover:border-slate-700 transition-colors"
-          >
-            <LogOut size={16} />
-            <span className="text-sm font-medium">退出登录</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleRefreshData}
+              disabled={isLoadingData}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 text-slate-400 rounded-lg hover:text-white hover:border-purple-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="刷新数据"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isLoadingData ? 'animate-spin' : ''}>
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+              </svg>
+              <span className="text-sm font-medium">{isLoadingData ? '刷新中...' : '刷新数据'}</span>
+            </button>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 text-slate-400 rounded-lg hover:text-white hover:border-slate-700 transition-colors"
+            >
+              <LogOut size={16} />
+              <span className="text-sm font-medium">退出登录</span>
+            </button>
+          </div>
         </div>
 
         {/* My Data Overview */}
