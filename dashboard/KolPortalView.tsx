@@ -111,11 +111,27 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
           const maxAge = 24 * 60 * 60 * 1000; // 24小时
 
           if (cacheAge < maxAge) {
-            console.log('📦 使用缓存数据');
-            setUserBasicInfo(parsed.userBasicInfo);
-            setTopFollowers(parsed.topFollowers);
-            setBlueVerifiedCount(parsed.blueVerifiedCount);
-            return; // 使用缓存,不调用 API
+            // 验证缓存数据完整性
+            const hasValidData =
+              parsed.userBasicInfo &&
+              parsed.userBasicInfo.followers_count !== undefined &&
+              parsed.topFollowers &&
+              Array.isArray(parsed.topFollowers) &&
+              parsed.blueVerifiedCount !== undefined;
+
+            if (hasValidData) {
+              console.log('📦 使用缓存数据', {
+                followers: parsed.userBasicInfo.followers_count,
+                blueV: parsed.blueVerifiedCount,
+                topFollowers: parsed.topFollowers.length
+              });
+              setUserBasicInfo(parsed.userBasicInfo);
+              setTopFollowers(parsed.topFollowers);
+              setBlueVerifiedCount(parsed.blueVerifiedCount);
+              return; // 使用缓存,不调用 API
+            } else {
+              console.warn('⚠️ 缓存数据不完整,重新获取');
+            }
           } else {
             console.log('⏰ 缓存已过期,重新获取数据');
           }
@@ -125,6 +141,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       }
 
       // 缓存不存在或已过期,调用 API
+      console.log('🌐 开始调用 API 获取数据...');
       fetchUserBasicInfo(username);
       fetchFollowersList(twitterId);
     }
@@ -267,8 +284,71 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       });
 
       setUserBasicInfo(basicInfo);
+
+      // 尝试保存到缓存(如果粉丝数据已存在)
+      saveToCache(basicInfo, null, null);
     } catch (err) {
       console.error('获取用户信息失败:', err);
+    }
+  }
+
+  // 统一的缓存保存函数
+  function saveToCache(
+    userInfo: UserBasicInfo | null,
+    followers: FollowerUser[] | null,
+    blueCount: number | null
+  ): void {
+    if (!twitterId) return;
+
+    const cacheKey = `kol_data_${twitterId}`;
+
+    // 尝试从现有缓存或状态获取数据
+    let finalUserInfo = userInfo || userBasicInfo;
+    let finalFollowers = followers || topFollowers;
+    let finalBlueCount = blueCount !== null ? blueCount : blueVerifiedCount;
+
+    // 如果数据不完整,尝试从缓存补充
+    if (!finalUserInfo || !finalFollowers || finalFollowers.length === 0) {
+      const existingCache = localStorage.getItem(cacheKey);
+      if (existingCache) {
+        try {
+          const parsed = JSON.parse(existingCache);
+          finalUserInfo = finalUserInfo || parsed.userBasicInfo;
+          finalFollowers = (finalFollowers && finalFollowers.length > 0) ? finalFollowers : parsed.topFollowers;
+          finalBlueCount = finalBlueCount || parsed.blueVerifiedCount;
+        } catch (e) {
+          // 忽略
+        }
+      }
+    }
+
+    // 验证数据完整性
+    const isValid =
+      finalUserInfo &&
+      finalUserInfo.followers_count !== undefined &&
+      finalFollowers &&
+      finalFollowers.length > 0 &&
+      finalBlueCount !== undefined;
+
+    if (isValid) {
+      const cacheData = {
+        timestamp: Date.now(),
+        userBasicInfo: finalUserInfo,
+        topFollowers: finalFollowers,
+        blueVerifiedCount: finalBlueCount
+      };
+      localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+      console.log('💾 数据已保存到本地缓存', {
+        followers: finalUserInfo!.followers_count,
+        topFollowers: finalFollowers!.length,
+        blueV: finalBlueCount
+      });
+    } else {
+      console.log('⏳ 数据未完整,暂不保存缓存', {
+        hasUserInfo: !!finalUserInfo,
+        hasFollowers: finalFollowers?.length > 0,
+        hasBlueCount: finalBlueCount !== undefined
+      });
     }
   }
 
@@ -414,34 +494,8 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       setTopFollowers(topUsers);
       console.log('✅ 粉丝数据获取完成');
 
-      // 保存完整数据到本地缓存
-      if (twitterId) {
-        const cacheKey = `kol_data_${twitterId}`;
-
-        // 获取当前的 userBasicInfo (可能已经从另一个函数设置)
-        // 或者从缓存中获取
-        let currentUserBasicInfo = userBasicInfo;
-        if (!currentUserBasicInfo) {
-          const existingCache = localStorage.getItem(cacheKey);
-          if (existingCache) {
-            try {
-              const parsed = JSON.parse(existingCache);
-              currentUserBasicInfo = parsed.userBasicInfo;
-            } catch (e) {
-              // 忽略解析错误
-            }
-          }
-        }
-
-        const cacheData = {
-          timestamp: Date.now(),
-          userBasicInfo: currentUserBasicInfo,
-          topFollowers: topUsers,
-          blueVerifiedCount: blueCount
-        };
-        localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-        console.log('💾 数据已保存到本地缓存 (24小时有效)');
-      }
+      // 使用统一的缓存保存函数
+      saveToCache(null, topUsers, blueCount);
     } catch (err) {
       console.error('获取粉丝列表失败:', err);
     } finally {

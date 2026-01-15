@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MessageCircle, ExternalLink, Ghost, RefreshCw } from 'lucide-react';
 import { Language } from '../../i18n';
-import { db } from '../../firebase';
-import { collection, setDoc, doc, getDocs, query, orderBy, limit } from 'firebase/firestore';
 
 interface TelegramPost {
     id: number;
@@ -64,11 +62,10 @@ export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement 
     const scrollRef = useRef<HTMLDivElement>(null);
 
     /**
-     * 从服务器和本地缓存加载消息
-     * 使用多层错误处理，确保任何失败都不会导致组件崩溃
+     * 从本地缓存加载消息
+     * 使用错误处理,确保任何失败都不会导致组件崩溃
      */
-    async function loadInitialPosts(): Promise<void> {
-        // 1. 先尝试从本地加载，提供最快响应
+    function loadInitialPosts(): void {
         try {
             const cached = localStorage.getItem('tg_posts_all');
             if (cached) {
@@ -85,37 +82,6 @@ export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement 
             } catch (clearError) {
                 console.warn("Failed to clear corrupted cache:", clearError);
             }
-        }
-
-        // 2. 从 Firestore 加载最新数据（带超时保护）
-        try {
-            const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Firestore timeout')), 10000)
-            );
-
-            const queryPromise = (async () => {
-                const q = query(collection(db, 'telegram_alpha'), orderBy('date', 'asc'), limit(40));
-                const querySnapshot = await getDocs(q);
-                const serverPosts: TelegramPost[] = [];
-                querySnapshot.forEach((doc) => {
-                    serverPosts.push(doc.data() as TelegramPost);
-                });
-                return serverPosts;
-            })();
-
-            const serverPosts = await Promise.race([queryPromise, timeoutPromise]) as TelegramPost[];
-
-            if (Array.isArray(serverPosts) && serverPosts.length > 0) {
-                setTgPosts(serverPosts);
-                try {
-                    localStorage.setItem('tg_posts_all', JSON.stringify(serverPosts));
-                } catch (storageError) {
-                    console.warn("Failed to save to localStorage:", storageError);
-                }
-            }
-        } catch (e) {
-            console.warn("Failed to load TG from Firestore:", e);
-            // Firestore 失败不应该阻止组件渲染
         }
     }
 
@@ -180,7 +146,7 @@ export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement 
 
     /**
      * 刷新所有频道的消息
-     * 使用超时保护和完善的错误处理
+     * 使用超时保护和完善的错误处理,缓存最近 20 条消息到本地
      */
     async function refreshAllChannels(forceLoading = false): Promise<void> {
         if (forceLoading) setTgLoading(true);
@@ -214,23 +180,16 @@ export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement 
                     const exists = combined.some(p => p.id === newPost.id && p.channel === newPost.channel);
                     if (!exists) {
                         combined.push(newPost);
-                        // 异步保存到 Firestore（带错误处理）
-                        try {
-                            const docId = `${newPost.channel}_${newPost.id}`;
-                            setDoc(doc(db, 'telegram_alpha', docId), newPost).catch(err => {
-                                console.warn(`Failed to save post ${docId} to Firestore:`, err);
-                            });
-                        } catch (err) {
-                            console.warn('Failed to initiate Firestore save:', err);
-                        }
                     }
                 });
 
+                // 过滤、排序并只保留最近 20 条消息
                 const finalPosts = combined
                     .filter(p => !/^\s*pinned/i.test(p.text))
                     .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime())
-                    .slice(0, 40);
+                    .slice(-20); // 只保留最近 20 条
 
+                // 保存到本地存储
                 try {
                     localStorage.setItem('tg_posts_all', JSON.stringify(finalPosts));
                 } catch (storageError) {
@@ -248,17 +207,15 @@ export function TelegramAlpha({ lang }: TelegramAlphaProps): React.ReactElement 
     }
 
     useEffect(() => {
-        // 使用 IIFE 包装异步操作，添加错误边界
-        (async () => {
-            try {
-                await loadInitialPosts();
-                await refreshAllChannels(true);
-            } catch (err) {
-                console.error('Failed to initialize TelegramAlpha:', err);
-                // 即使初始化失败，组件也应该能够渲染
-            }
-        })();
+        // 加载本地缓存
+        loadInitialPosts();
 
+        // 立即刷新一次
+        refreshAllChannels(true).catch(err => {
+            console.error('Failed to initialize TelegramAlpha:', err);
+        });
+
+        // 设置定时刷新
         const interval = setInterval(() => {
             refreshAllChannels(false).catch(err => {
                 console.warn('Background refresh failed:', err);
