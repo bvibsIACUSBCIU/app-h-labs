@@ -5,7 +5,7 @@ import { TickerTape } from '../components/TickerTape';
 import { DashboardSidebar } from './DashboardSidebar';
 import { MobileBottomNav } from './MobileBottomNav';
 import { WarRoomDashboard } from './WarRoomDashboard';
-import { KolPortalView } from './KolPortalView';
+import { KolPortalView } from './Koldataget/KolPortalView';
 import { BountyHallView } from './BountyHallView';
 import { AcademyView } from './AcademyView';
 import { FundView } from './FundView';
