@@ -1,3 +1,4 @@
+/** KOL 门户视图：集成 Twitter 登录、个人影响力统计、粉丝分析及推文数据分析 */
 import React, { useState, useEffect } from 'react';
 import { ShieldCheck, Users, Terminal, Coins, Lock, Globe, Twitter, CheckCircle2, Eye, Activity, UserPlus, LogOut, X, Heart, MessageCircle, ExternalLink, RefreshCw } from 'lucide-react';
 import { TerminalHeader } from '../../components/TerminalHeader';
@@ -18,6 +19,8 @@ import { auth } from "../../firebase";
 
 const provider = new TwitterAuthProvider();
 
+// ... existing imports
+
 // ==================== 类型定义 ====================
 
 interface UserBasicInfo {
@@ -35,6 +38,26 @@ interface FollowerUser {
   verified: boolean;
   description: string;
   profile_image_url_https: string;
+  // 新增字段用于活跃度分析
+  friends_count: number;
+  statuses_count: number;
+  favourites_count: number;
+  media_count: number;
+  created_at: string;
+  pinned_tweet_ids_str: string[];
+  default_profile_image: boolean;
+  profile_banner_url?: string;
+}
+
+interface FanActivityStats {
+  distribution: {
+    veryActive: { count: number; percent: number };
+    active: { count: number; percent: number };
+    lowActive: { count: number; percent: number };
+    bot: { count: number; percent: number };
+  };
+  healthScore: number;
+  totalAnalyzed: number;
 }
 
 interface KolPortalViewProps {
@@ -43,6 +66,17 @@ interface KolPortalViewProps {
 }
 
 // ==================== 默认空数据 ====================
+
+const EMPTY_FAN_STATS: FanActivityStats = {
+  distribution: {
+    veryActive: { count: 0, percent: 0 },
+    active: { count: 0, percent: 0 },
+    lowActive: { count: 0, percent: 0 },
+    bot: { count: 0, percent: 0 }
+  },
+  healthScore: 0,
+  totalAnalyzed: 0
+};
 
 const EMPTY_TWEET_ANALYTICS: TweetAnalytics = {
   totalTweets: 0,
@@ -87,6 +121,63 @@ function parseNestedJson(data: any): any {
     return result;
   }
   return data;
+}
+
+// 解析 Twitter 时间戳
+function parseTwitterTimestamp(tsStr: string): Date | null {
+  if (!tsStr) return null;
+  try {
+    // Twitter format: "Wed Dec 19 13:03:09 +0000 2018"
+    return new Date(tsStr);
+  } catch {
+    return null;
+  }
+}
+
+// 计算活跃度评分 (0-100)
+function calculateActivityScore(user: FollowerUser): number {
+  let score = 0;
+
+  // --- 1. 身份可信度 (40分) ---
+  if (user.is_blue_verified) score += 25;
+  if (!user.default_profile_image) score += 10;
+  if (user.profile_banner_url) score += 5;
+
+  // --- 2. 内容产出 (25分) ---
+  if (user.statuses_count > 1000) score += 15;
+  else if (user.statuses_count > 100) score += 10;
+  else if (user.statuses_count > 10) score += 5;
+
+  if (user.media_count > 10) score += 10;
+
+  // --- 3. 互动与影响力 (20分) ---
+  if (user.favourites_count > 500) score += 10;
+  else if (user.favourites_count > 50) score += 5;
+
+  if (user.pinned_tweet_ids_str && user.pinned_tweet_ids_str.length > 0) score += 10;
+
+  // --- 4. 账号质量比 (15分) ---
+  const friends = user.friends_count || 1;
+  const ratio = user.followers_count / friends;
+  if (ratio > 0.8) score += 10;
+
+  // 账号创建时间惩罚/加分 (简单处理: <30天 -20, >365天 +5)
+  const createdAt = parseTwitterTimestamp(user.created_at);
+  if (createdAt) {
+    const daysOld = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24);
+    if (daysOld < 30) score -= 20;
+    else if (daysOld > 365) score += 5;
+  }
+
+  return Math.max(0, Math.floor(score));
+}
+
+// 用户分类
+function classifyUser(score: number): 'veryActive' | 'active' | 'lowActive' | 'bot' {
+  if (score >= 80) return 'veryActive'; // 非常活跃 (高价值)
+  if (score >= 45) return 'active';     // 普通活跃
+  if (score >= 20) return 'lowActive';  // 低频活跃
+  return 'bot';                         // 疑似僵尸/机器人
 }
 
 // ==================== 子组件 ====================
@@ -308,6 +399,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
   const [userBasicInfo, setUserBasicInfo] = useState<UserBasicInfo | null>(null);
   const [topFollowers, setTopFollowers] = useState<FollowerUser[]>([]);
   const [blueVerifiedCount, setBlueVerifiedCount] = useState<number>(0);
+  const [fanActivityStats, setFanActivityStats] = useState<FanActivityStats>(EMPTY_FAN_STATS);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
   // 推文数据状态 (使用真实 API 数据)
@@ -347,6 +439,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
           setUserBasicInfo(parsed.userBasicInfo);
           setTopFollowers(parsed.topFollowers);
           setBlueVerifiedCount(parsed.blueVerifiedCount || 0);
+          if (parsed.fanActivityStats) setFanActivityStats(parsed.fanActivityStats);
         } catch { /* 忽略解析错误 */ }
       } else {
         fetchUserBasicInfo(username);
@@ -439,18 +532,20 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
   }
 
   // 保存缓存
-  function saveToCache(userInfo: UserBasicInfo | null, followers: FollowerUser[] | null, blueCount: number | null): void {
+  function saveToCache(userInfo: UserBasicInfo | null, followers: FollowerUser[] | null, blueCount: number | null, fanStats: FanActivityStats | null): void {
     if (!twitterId) return;
     const finalUserInfo = userInfo || userBasicInfo;
     const finalFollowers = followers || topFollowers;
     const finalBlueCount = blueCount ?? blueVerifiedCount;
+    const finalFanStats = fanStats || fanActivityStats;
 
     if (finalUserInfo && finalFollowers?.length > 0) {
       localStorage.setItem(`kol_data_${twitterId}`, JSON.stringify({
         timestamp: Date.now(),
         userBasicInfo: finalUserInfo,
         topFollowers: finalFollowers,
-        blueVerifiedCount: finalBlueCount
+        blueVerifiedCount: finalBlueCount,
+        fanActivityStats: finalFanStats
       }));
     }
   }
@@ -480,7 +575,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
       };
 
       setUserBasicInfo(basicInfo);
-      saveToCache(basicInfo, null, null);
+      saveToCache(basicInfo, null, null, null);
     } catch (err) { console.error('获取用户信息失败:', err); }
   }
 
@@ -524,7 +619,16 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
                   is_blue_verified: userResults.is_blue_verified || false,
                   verified: legacy.verified || false,
                   description: legacy.description || '',
-                  profile_image_url_https: legacy.profile_image_url_https || ''
+                  profile_image_url_https: legacy.profile_image_url_https || '',
+                  // 新增字段 extraction
+                  friends_count: legacy.friends_count || 0,
+                  statuses_count: legacy.statuses_count || 0,
+                  favourites_count: legacy.favourites_count || 0,
+                  media_count: legacy.media_count || 0,
+                  created_at: legacy.created_at || '',
+                  pinned_tweet_ids_str: legacy.pinned_tweet_ids_str || [],
+                  default_profile_image: legacy.default_profile_image || false,
+                  profile_banner_url: legacy.profile_banner_url
                 });
               }
             }
@@ -572,7 +676,37 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
 
       const topUsers = allFollowers.sort((a, b) => b.followers_count - a.followers_count).slice(0, 20);
       setTopFollowers(topUsers);
-      saveToCache(null, topUsers, blueCount);
+
+      // 计算活跃度统计
+      let veryActive = 0, active = 0, lowActive = 0, bot = 0;
+      let totalHealthScore = 0;
+
+      allFollowers.forEach(user => {
+        const score = calculateActivityScore(user);
+        const category = classifyUser(score);
+        if (category === 'veryActive') veryActive++;
+        else if (category === 'active') active++;
+        else if (category === 'lowActive') lowActive++;
+        else bot++;
+      });
+
+      const total = allFollowers.length || 1;
+      // 粉丝健康评分: 活跃粉丝(非常活跃+普通活跃)占比 * 100
+      const healthScore = Math.round(((veryActive + active) / total) * 100);
+
+      const stats: FanActivityStats = {
+        totalAnalyzed: total,
+        healthScore,
+        distribution: {
+          veryActive: { count: veryActive, percent: (veryActive / total) * 100 },
+          active: { count: active, percent: (active / total) * 100 },
+          lowActive: { count: lowActive, percent: (lowActive / total) * 100 },
+          bot: { count: bot, percent: (bot / total) * 100 }
+        }
+      };
+
+      setFanActivityStats(stats);
+      saveToCache(null, topUsers, blueCount, stats);
     } catch (err) { console.error('获取粉丝列表失败:', err); }
     finally { setIsLoadingData(false); }
   }
@@ -604,48 +738,89 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
         </div>
 
         {/* 第一行：个人信息 + 影响力粉丝列表 */}
+        {/* 第一行：个人信息 + 影响力粉丝列表 */}
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* 左侧：个人信息卡片 */}
-          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 space-y-6">
-            <div className="flex items-start gap-4">
-              <div className="w-16 h-16 rounded-full bg-slate-800 border-2 border-slate-700 overflow-hidden shrink-0">
-                {photoUrl ? <img src={photoUrl} alt="Avatar" className="w-full h-full object-cover" /> : <span className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-400">{user.displayName?.[0] || 'K'}</span>}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-white truncate">{userBasicInfo?.name || user.displayName}</h3>
-                  <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-medium rounded">已认证</span>
+          {/* 左侧容器：个人信息卡片 + 粉丝活跃度分析 */}
+          <div className="space-y-6">
+            {/* 个人信息卡片 */}
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 space-y-6">
+              <div className="flex items-start gap-4">
+                <div className="w-16 h-16 rounded-full bg-slate-800 border-2 border-slate-700 overflow-hidden shrink-0">
+                  {photoUrl ? <img src={photoUrl} alt="Avatar" className="w-full h-full object-cover" /> : <span className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-400">{user.displayName?.[0] || 'K'}</span>}
                 </div>
-                <p className="text-sm text-slate-500">@{username || 'user'}</p>
-                <p className="text-sm text-slate-400 mt-2 line-clamp-2">{userBasicInfo?.description || '复旦博士 | 正在building 由多个AI Agents组成的链上分析、聪明钱动向、项目分析、评价、交易系统'}</p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-bold text-white truncate">{userBasicInfo?.name || user.displayName}</h3>
+                    <span className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-medium rounded">已认证</span>
+                  </div>
+                  <p className="text-sm text-slate-500">@{username || 'user'}</p>
+                  <p className="text-sm text-slate-400 mt-2 line-clamp-2">{userBasicInfo?.description || '复旦博士 | 正在building 由多个AI Agents组成的链上分析、聪明钱动向、项目分析、评价、交易系统'}</p>
+                </div>
+              </div>
+              {/* 统计指标 */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard icon={<Users size={18} />} value={userStats.followers} label="粉丝数量" />
+                <StatCard icon={<CheckCircle2 size={18} />} value={userStats.verified} label="蓝 V 关注" />
+                <StatCard icon={<Eye size={18} />} value={userStats.exposure} label="24H 曝光量" />
+                <StatCard icon={<Activity size={18} />} value={userStats.engagement} label="互动率" />
               </div>
             </div>
-            {/* 统计指标 */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard icon={<Users size={18} />} value={userStats.followers} label="粉丝数量" />
-              <StatCard icon={<CheckCircle2 size={18} />} value={userStats.verified} label="蓝 V 关注" />
-              <StatCard icon={<Eye size={18} />} value={userStats.exposure} label="24H 曝光量" />
-              <StatCard icon={<Activity size={18} />} value={userStats.engagement} label="互动率" />
+
+            {/* 粉丝活跃度分析 (移动到左侧) */}
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-6 border-l-2 border-purple-500 pl-3">
+                <h3 className="font-bold text-white">粉丝活跃度分析</h3>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-8">
+                {/* 环形图 */}
+                <div className="flex-1 w-full flex justify-center sm:justify-start">
+                  <DonutChart
+                    total={fanActivityStats.totalAnalyzed}
+                    centerLabel="粉丝"
+                    Data={[
+                      { label: '非常活跃', value: fanActivityStats.distribution.veryActive.count, percent: fanActivityStats.distribution.veryActive.percent, color: '#22c55e' },
+                      { label: '普通活跃', value: fanActivityStats.distribution.active.count, percent: fanActivityStats.distribution.active.percent, color: '#3b82f6' },
+                      { label: '低频活跃', value: fanActivityStats.distribution.lowActive.count, percent: fanActivityStats.distribution.lowActive.percent, color: '#facc15' },
+                      { label: '疑似机器人', value: fanActivityStats.distribution.bot.count, percent: fanActivityStats.distribution.bot.percent, color: '#ef4444' }
+                    ]}
+                  />
+                </div>
+
+                {/* 健康评分 */}
+                <div className="flex flex-col items-center justify-center p-6 bg-slate-950/50 rounded-xl border border-slate-800 min-w-[140px]">
+                  <div className={`text-5xl font-bold mb-2 ${fanActivityStats.healthScore >= 60 ? 'text-green-400' : fanActivityStats.healthScore >= 40 ? 'text-yellow-400' : 'text-red-400'}`}>
+                    {fanActivityStats.healthScore}
+                  </div>
+                  <div className="text-xs text-slate-500 text-center">账号粉丝<br />健康评分</div>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-500 mt-6 text-center opacity-60">
+                注*由于API限制，数据可能不全
+              </div>
             </div>
           </div>
 
-          {/* 右侧：最具影响力粉丝列表 */}
-          <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-800">
-              <span className="w-2 h-2 rounded-full bg-red-500" />
-              <span className="text-sm font-medium text-white">关注你的Top 20 KOL</span>
-            </div>
-            <div className="max-h-[280px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
-              {isLoadingData && topFollowers.length === 0 ? (
-                <div className="flex items-center justify-center py-12 text-slate-400">
-                  <div className="animate-spin w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full mr-2" />
-                  <span className="text-sm">正在加载粉丝数据...</span>
-                </div>
-              ) : topFollowers.length > 0 ? (
-                topFollowers.slice(0, 20).map((follower, i) => <FollowerRow key={follower.screen_name} follower={follower} rank={i + 1} />)
-              ) : (
-                <div className="text-center py-12 text-slate-500 text-sm">暂无粉丝数据</div>
-              )}
+          {/* 右侧容器：最具影响力粉丝列表 (高度与左侧对齐) */}
+          <div className="h-[590px]">
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden h-full flex flex-col">
+              <div className="flex items-center gap-2 px-4 py-4 border-b border-slate-800 bg-slate-900/30 shrink-0">
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+                <span className="text-sm font-medium text-white">关注你的Top 20</span>
+              </div>
+              <div className="flex-1 overflow-y-auto min-h-0 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
+                {isLoadingData && topFollowers.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-slate-400">
+                    <div className="animate-spin w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full mr-2" />
+                    <span className="text-sm">正在加载粉丝数据...</span>
+                  </div>
+                ) : topFollowers.length > 0 ? (
+                  topFollowers.slice(0, 20).map((follower, i) => <FollowerRow key={follower.screen_name} follower={follower} rank={i + 1} />)
+                ) : (
+                  <div className="flex items-center justify-center h-full text-slate-500 text-sm">暂无粉丝数据</div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -836,7 +1011,7 @@ export function KolPortalView({ lang, translations }: KolPortalViewProps): React
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-bold text-white">热门推文精选</h2>
-            <span className="text-xs text-slate-500">浏览量最高的10条推文，捕捉最具影响力的内容。</span>
+            <span className="text-xs text-slate-500">浏览量最高的12条推文，捕捉最具影响力的内容。</span>
           </div>
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-5">

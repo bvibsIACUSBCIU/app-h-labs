@@ -1,6 +1,6 @@
 /**
  * 推文数据获取与处理服务
- * 从 Twitter API 获取用户推文数据，计算统计指标并缓存
+ * 负责对接 Twitter API、计算统计指标并管理本地数据缓存
  */
 
 // ==================== 类型定义 ====================
@@ -340,7 +340,7 @@ export function calculateTweetAnalytics(tweets: RawTweet[]): TweetAnalytics {
 /**
  * 获取热门推文 (按浏览量排序)
  */
-export function getHotTweets(tweets: RawTweet[], screenName: string, limit: number = 10): HotTweet[] {
+export function getHotTweets(tweets: RawTweet[], screenName: string, limit: number = 12): HotTweet[] {
     return tweets
         .sort((a, b) => b.views - a.views)
         .slice(0, limit)
@@ -505,7 +505,11 @@ export async function fetchAndProcessTweetData(
     if (!forceRefresh) {
         const cached = loadTweetDataFromCache(userId);
         if (cached) {
-            return { analytics: cached.analytics, hotTweets: cached.hotTweets };
+            // 确保如果缓存中只有10条，重新计算为12条
+            const hotTweets = cached.hotTweets.length >= 12
+                ? cached.hotTweets
+                : getHotTweets(cached.rawTweets, screenName, 12);
+            return { analytics: cached.analytics, hotTweets };
         }
     }
 
@@ -518,7 +522,7 @@ export async function fetchAndProcessTweetData(
 
     // 计算统计数据
     const analytics = calculateTweetAnalytics(rawTweets);
-    const hotTweets = getHotTweets(rawTweets, screenName, 10);
+    const hotTweets = getHotTweets(rawTweets, screenName, 12);
 
     // 保存缓存
     saveTweetDataToCache(userId, rawTweets, analytics, hotTweets);
