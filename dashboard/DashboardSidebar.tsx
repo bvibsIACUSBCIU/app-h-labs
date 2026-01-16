@@ -23,11 +23,9 @@ export const DashboardSidebar = ({ activeTab, setTab, onLogout, lang, translatio
 
   return (
     <div className="hidden md:flex w-20 md:w-52 bg-slate-950 border-r border-slate-800 flex-col h-screen sticky top-0">
-      <div className="p-6 flex items-center gap-3 border-b border-slate-800">
-        <div className="w-8 h-8 bg-indigo-600 rounded-sm flex items-center justify-center text-white font-bold font-mono shadow-[0_0_15px_rgba(79,70,229,0.5)]">
-          H
-        </div>
-        <span className="hidden md:block font-bold text-lg tracking-tight">H Labs <span className="text-indigo-500 text-xs align-top">OS</span></span>
+      <div className="p-6 flex items-center gap-3 border-b border-slate-800 invisible pointer-events-none">
+        <div className="w-8 h-8" />
+        <span className="hidden md:block font-bold text-lg tracking-tight">H Labs OS</span>
       </div>
 
       <nav className="flex-1 py-6 space-y-2 px-3">
