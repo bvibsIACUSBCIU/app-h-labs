@@ -1,3 +1,4 @@
+/** 链上分析组件：监控交易所资金流向、聪明钱动向及大鳄预警 */
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, Wallet, Ghost, ArrowDownRight, ArrowUpRight, AlertCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { Language } from '../../i18n';

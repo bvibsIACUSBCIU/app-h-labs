@@ -1,3 +1,4 @@
+/** 作战室主视图：集成市场、链上、新闻及情报流的综合监控面板 */
 import React from 'react';
 import { TerminalHeader } from '../components/TerminalHeader';
 import { Language } from '../i18n';

@@ -1,3 +1,4 @@
+/** Dashboard 主入口：管理整体布局、侧边栏切换、全局市场数据抓取及状态分发 */
 import React, { useState, useEffect } from 'react';
 import { TabState } from '../types';
 import { Language, translations } from '../i18n';

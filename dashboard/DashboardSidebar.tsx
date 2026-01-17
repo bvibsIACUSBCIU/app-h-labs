@@ -1,3 +1,4 @@
+/** Dashboard 侧边栏组件：提供桌面端导航切换及退出登录功能 */
 import React from 'react';
 import { Swords, Users, Target, GraduationCap, PieChart, LogOut } from 'lucide-react';
 import { TabState } from '../types';

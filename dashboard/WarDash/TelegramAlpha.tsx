@@ -1,3 +1,4 @@
+/** Telegram 情报流组件：实时抓取、清洗并展示 Telegram 核心频道消息 */
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MessageCircle, ExternalLink, Ghost, RefreshCw } from 'lucide-react';
 import { Language } from '../../i18n';

@@ -1,3 +1,4 @@
+/** 市场行情组件：展示实时代币价格、行情趋势及 Gas 费用 */
 import React, { useState } from 'react';
 import { Activity, RefreshCw, Search, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { Language } from '../../i18n';

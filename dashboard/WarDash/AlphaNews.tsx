@@ -1,3 +1,4 @@
+/** Alpha 新闻组件：实时抓取加密快讯及 Twitter 热门趋势 */
 import React, { useState, useEffect, useMemo } from 'react';
 import { Radio, Search, RefreshCw, AlertTriangle, ChevronRight, ExternalLink, Radar, Twitter, X } from 'lucide-react';
 import { Language } from '../../i18n';

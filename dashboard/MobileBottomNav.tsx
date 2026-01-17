@@ -1,3 +1,4 @@
+/** 移动端底部导航组件：在移动端提供视图切换入口 */
 import React from 'react';
 import { Swords, Users, Target, GraduationCap, PieChart } from 'lucide-react';
 import { TabState } from '../types';
