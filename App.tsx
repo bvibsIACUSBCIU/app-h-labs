@@ -16,7 +16,7 @@ const App = () => {
             {/* Top-left Global Logo */}
             <div className="fixed top-6 left-6 z-[60] flex items-center gap-3 pointer-events-none">
                 <img
-                    src="/Hlabs-logo.jpg"
+                    src="/Hlabs-logo.png"
                     alt="H Labs Logo"
                     className="w-8 h-8 rounded-sm shadow-[0_0_15px_rgba(79,70,229,0.4)] object-cover"
                 />
@@ -32,7 +32,7 @@ const App = () => {
                     <div className="text-center space-y-8 animate-in">
                         <div className="flex justify-center">
                             <img
-                                src="/Hlabs-logo.jpg"
+                                src="/Hlabs-logo.png"
                                 alt="H Labs Logo"
                                 className="w-24 h-24 rounded-2xl shadow-[0_0_30px_rgba(79,70,229,0.3)] border border-white/10"
                             />
